@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Secrets and local config - NEVER commit these
+.env
+*.key
+*.pem
+secrets/
+
+# Local data
+*.db
+*.sqlite3
+logs/
+*.log
+dump.rdb
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,5 @@
+# Starter dependencies. Owner of requirements.txt: Devanshi (T04). Add yours via PR.
+flask>=3.0
+requests>=2.31
+pytest>=8.0
+redis>=5.0   # optional, only if EVENT_STORE=redis
