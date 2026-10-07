@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebhookGuard &mdash; Webhook Security Dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="brand">
+        <h1>BASTIAN HOOKS</h1>
+        <p class="subtitle">Webhook Security Dashboard &mdash; WebhookGuard receiver</p>
+      </div>
+      <div class="header-right">
+        <span id="conn-status" class="status-dot unknown" title="Connection to the security service">
+          <span class="dot"></span><span id="conn-label">Connecting&hellip;</span>
+        </span>
+        <button id="refresh-btn" type="button" title="Reload data from the backend">Refresh</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Banner used for load errors / retry notices; hidden otherwise -->
+    <div id="error-banner" class="error-banner hidden" role="alert">
+      <strong>Unable to connect to the security service.</strong>
+      <span id="error-detail">Check whether the backend is running.</span>
+    </div>
+
+    <!-- 1. Summary cards -->
+    <section class="cards" aria-label="Summary counts">
+      <div class="card">
+        <div class="card-label">TOTAL EVENTS</div>
+        <div class="card-value" id="stat-total">&ndash;</div>
+      </div>
+      <div class="card card-valid">
+        <div class="card-label">VALID</div>
+        <div class="card-value" id="stat-valid">&ndash;</div>
+      </div>
+      <div class="card card-rejected">
+        <div class="card-label">REJECTED</div>
+        <div class="card-value" id="stat-rejected">&ndash;</div>
+      </div>
+      <div class="card card-replay">
+        <div class="card-label">REPLAYED</div>
+        <div class="card-value" id="stat-replayed">&ndash;</div>
+      </div>
+    </section>
+
+    <!-- 2. Event breakdown (plain CSS bars; no chart library) -->
+    <section class="panel" aria-label="Event breakdown">
+      <h2>EVENT BREAKDOWN</h2>
+      <p class="panel-sub">All logged webhook requests by verification result</p>
+      <div id="breakdown" class="breakdown">
+        <p class="muted">Loading security events&hellip;</p>
+      </div>
+    </section>
+
+    <!-- 3. Recent events table -->
+    <section class="panel" aria-label="Recent webhook events">
+      <h2>RECENT WEBHOOK EVENTS</h2>
+      <p class="panel-sub">Newest first &middot; last 100 entries &middot; <span id="last-updated"></span></p>
+      <div class="table-wrap">
+        <table id="events-table">
+          <thead>
+            <tr>
+              <th scope="col">Time</th>
+              <th scope="col">Event ID</th>
+              <th scope="col">Status</th>
+              <th scope="col">Reason</th>
+              <th scope="col">Key</th>
+              <th scope="col">Timestamp</th>
+            </tr>
+          </thead>
+          <tbody id="events-body">
+            <tr><td colspan="6" class="muted center">Loading security events&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">
+        Signing secrets, signatures and payload contents are never logged or displayed.
+        Payloads appear only as a SHA-256 digest (<code>body_sha256</code>).
+      </p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>Verification order: signature &rarr; timestamp &rarr; replay &rarr; accept</span>
+    <span id="footer-note">Data source: <code>/api/dashboard</code></span>
+  </footer>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>
