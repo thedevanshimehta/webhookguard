@@ -67,6 +67,7 @@ Why this order: the event_id is stored **only after** signature and timestamp pa
 | Signature mismatch | `invalid_signature` | 401 |
 | Timestamp outside window | `expired` | 400 |
 | Event ID already processed | `replayed` | 409 |
+| Event store unavailable | `store_unavailable` | 503 |
 
 Response body (always JSON):
 ```json
@@ -82,9 +83,14 @@ Response body (always JSON):
 - `now` uses the receiver's clock in UTC seconds. `check_timestamp` takes an optional `now` argument so tests can control time.
 
 ## 6. Replay rule
-- Store key = `event_id`. Value is only a "seen" marker.
-- TTL = `2 * TIMESTAMP_WINDOW_SECONDS + 10` seconds. (Window is symmetric, so a valid request can stay replayable for up to 2x the window.)
-- `check_and_set` must be **atomic**: two concurrent requests with the same ID, exactly one gets "new".
+
+- The event store exposes `check_and_set(event_id, ttl_seconds) -> bool`. It returns `True` when the event is new and `False` when the event has already been seen.
+- The operation must be **atomic**: two concurrent requests with the same store key must not both be accepted as new.
+- When a key ID is available, the receiver namespaces the store key as `key_id:event_id` to avoid collisions between events signed under different keys.
+- The replay TTL is `2 * TIMESTAMP_WINDOW_SECONDS + 30` seconds under the current implementation. The additional 30 seconds provides a small safety margin.
+- The receiver records an event only after signature and timestamp validation pass.
+- If the event store is unavailable, reject the request with reason `store_unavailable` and HTTP 503. Do not bypass replay protection.
+- Supported implementations: SQLite, Redis, and in-memory storage. In-memory storage is intended for development and testing; it does not provide shared replay protection across processes or survive restarts.
 
 ## 7. Security log entry (JSON Lines, one object per line)
 
@@ -112,7 +118,7 @@ Shared types live in `receiver/pipeline/result.py`.
 @dataclass(frozen=True)
 class CheckResult:
     ok: bool
-    reason: str          # "valid" if ok, else a reason code from section 4
+    reason: str
 
 @dataclass(frozen=True)
 class Decision:
@@ -125,32 +131,43 @@ class Decision:
 
 | Module (owner) | Function | Behaviour |
 |---|---|---|
-| `receiver/crypto/hmac_utils.py` (Laxmi) | `build_canonical(timestamp: str, event_id: str, body: bytes) -> bytes` | Section 2 canonical string |
-| | `compute_signature(secret: bytes, canonical: bytes) -> str` | Lowercase hex HMAC-SHA256 |
-| | `verify_signature(secret: bytes, canonical: bytes, received_hex: str) -> bool` | Constant-time compare; `received_hex` has the `sha256=` prefix already removed |
-| `keys/key_manager.py` (Devanshi) | `get_key(key_id: str) -> bytes \| None` | Secret for a key ID, `None` if unknown/retired |
-| | `get_active_keys() -> dict[str, bytes]` | All keys valid for **verification** (new + old during rotation overlap) |
-| | `get_signing_key() -> tuple[str, bytes]` | `(key_id, secret)` the sender should sign with |
-| `receiver/pipeline/signature_check.py` (Vedansh) | `check_signature(key_id, timestamp, event_id, body, signature_header) -> CheckResult` | Strips `sha256=`, uses `key_manager` + `hmac_utils` |
-| `receiver/pipeline/endpoint.py` (Vedansh) | Flask route `POST /webhook` | Extracts headers/body, calls `decision_engine.verify_webhook`, returns JSON from section 4 |
-| `receiver/pipeline/timestamp_check.py` (Anushka) | `check_timestamp(timestamp: int, now: int \| None = None, window: int = 300) -> CheckResult` | Section 5 |
-| `store/event_store.py` (Yashvi) | `class EventStore: check_and_set(event_id: str, ttl_seconds: int) -> bool` | `True` = first time seen (new), `False` = duplicate. Atomic |
-| | `get_event_store(config) -> EventStore` | Returns Redis or SQLite implementation per `EVENT_STORE` |
-| `receiver/pipeline/replay_check.py` (Yashvi) | `check_replay(event_id: str, store: EventStore, ttl_seconds: int) -> CheckResult` | Wraps `check_and_set` |
-| `receiver/pipeline/decision_engine.py` (Harsh) | `verify_webhook(headers: dict, body: bytes, source_ip: str) -> Decision` | Runs section 3 in order, calls the logger, returns `Decision` |
-| `logs-dashboard/logger.py` (Harsh) | `log_decision(decision: Decision, source_ip: str, request_timestamp: int \| None, body: bytes) -> None` | Appends one line per section 7 to `LOG_PATH` |
-| `app/config.py` (Devanshi) | `load_config() -> Config` | Fields: `timestamp_window`, `event_store`, `sqlite_path`, `redis_url`, `log_path` |
+| `receiver/crypto/hmac_utils.py` (Laxmi) | `build_canonical(timestamp: str, event_id: str, body: bytes) -> bytes` | Builds the canonical signing bytes according to Section 2 |
+| | `compute_signature(secret: bytes, canonical: bytes) -> str` | Returns lowercase hexadecimal HMAC-SHA256 |
+| | `verify_signature(secret: bytes, canonical: bytes, received_hex: str) -> bool` | Constant-time comparison; `received_hex` has the `sha256=` prefix removed |
+| `keys/key_manager.py` (Devanshi) | `get_key(key_id: str) -> bytes | None` | Returns the secret for a key ID, or `None` if unknown |
+| | `get_active_keys() -> dict[str, bytes]` | Returns keys accepted for verification during rotation overlap |
+| | `get_signing_key() -> tuple[str, bytes]` | Returns the active signing key ID and secret |
+| `receiver/pipeline/signature_check.py` (Vedansh) | `check_signature(key_id, timestamp, event_id, body, signature_header) -> CheckResult` | Checks the key and HMAC signature |
+| `receiver/pipeline/timestamp_check.py` (Anushka) | `check_timestamp(timestamp: int, now: int | None = None, window: int = 300) -> CheckResult` | Validates the timestamp freshness window |
+| `store/event_store.py` (Yashvi) | `EventStore.check_and_set(event_id: str, ttl_seconds: int) -> bool` | Atomically records an event; `True` means new, `False` means duplicate |
+| | `EventStore.purge_expired() -> int` | Removes expired entries where supported |
+| | `EventStore.close() -> None` | Releases store resources |
+| | `create_event_store(kind="sqlite", *, path="data/events.db", redis_url="redis://localhost:6379/0", clock=None) -> EventStore` | Creates the selected SQLite, Redis, or in-memory implementation |
+| | `StoreUnavailable` | Indicates that a store operation could not be completed |
+| `receiver/pipeline/replay_check.py` (Yashvi) | `check_replay(event_id, store, *, window_seconds=300, future_skew_seconds=300, key_id=None) -> ReplayResult` | Wraps the atomic store operation and reports valid, replayed, or store-unavailable outcomes |
+| `receiver/pipeline/decision_engine.py` (Harsh) | `verify_webhook(headers, body, source_ip, event_store=None) -> Decision` | Runs verification, uses the supplied event store, logs the decision, and returns a `Decision` |
+| `logs-dashboard/logger.py` (Harsh) | `log_decision(decision: Decision, source_ip: str, request_timestamp: int | None, body: bytes) -> None` | Appends a security log entry as defined in Section 7 |
+| `app/config.py` (Devanshi) | `load_config() -> Config` | Provides `timestamp_window`, `event_store`, `event_store_path`, `redis_url`, and `log_path`; `sqlite_path` is a compatibility property |
+| `receiver/pipeline/endpoint.py` (Vedansh) | `create_webhook_app(verifier=None)` | Creates the Flask app and, unless a custom verifier is supplied, creates one event store at startup and shares it with webhook verification |
 
-## 9. Configuration (environment variables, see `.env.example`)
+## 9. Configuration
+
+Environment variables are documented in `.env.example`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `WEBHOOKGUARD_KEYS` | none (required) | `key_id:secret` pairs, comma separated. **First entry is the active signing key**; the rest are accepted for verification only |
-| `TIMESTAMP_WINDOW_SECONDS` | `300` | Freshness window |
-| `EVENT_STORE` | `sqlite` | `sqlite` or `redis` |
-| `SQLITE_PATH` | `./webhookguard.db` | SQLite file |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
-| `LOG_PATH` | `./logs/security.jsonl` | Security log file |
+| `WEBHOOKGUARD_KEYS` | None (required for signature verification) | Comma-separated `key_id:secret` pairs. The first entry is the active signing key; all configured keys are accepted for verification during rotation overlap. |
+| `TIMESTAMP_WINDOW_SECONDS` | `300` | Symmetric timestamp freshness window, in seconds |
+| `EVENT_STORE` | `sqlite` | Backend selection: `sqlite`, `redis`, or `memory` |
+| `EVENT_STORE_PATH` | `data/events.db` | SQLite database path; used when `EVENT_STORE=sqlite` |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL; used when `EVENT_STORE=redis` |
+| `LOG_PATH` | `logs/security.jsonl` | JSON Lines security-log path |
+
+**Compatibility:** `SQLITE_PATH` is accepted as a legacy fallback for `EVENT_STORE_PATH`. If both are set, `EVENT_STORE_PATH` takes precedence.
+
+**Lifecycle:** The Flask application creates the selected event store once during app creation and shares that instance with the verification pipeline. Store failures produce `store_unavailable` / HTTP 503 rather than silently accepting a request.
+
+
 
 ## 10. Stubs while waiting for upstream modules
 - **Key manager stub:** read `WEBHOOKGUARD_KEYS` directly from the environment.

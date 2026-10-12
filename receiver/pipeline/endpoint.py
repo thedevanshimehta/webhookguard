@@ -47,8 +47,37 @@ def create_webhook_blueprint(verifier: Verifier | None = None) -> Blueprint:
 
 
 def create_webhook_app(verifier: Verifier | None = None) -> Flask:
-    """Create a small Flask app exposing the protected webhook route."""
+    """Create the Flask app and initialize the shared event store once."""
     app = Flask(__name__)
+
+    if verifier is None:
+        from app.config import load_config
+        from store.event_store import create_event_store
+        from receiver.pipeline.decision_engine import verify_webhook
+
+        config = load_config()
+
+        # Create one store for this application instance.
+        event_store = create_event_store(
+            kind=config.event_store,
+            path=config.event_store_path,
+            redis_url=config.redis_url,
+        )
+
+        # Keep a reference to the store for application-level access.
+        app.extensions["webhookguard_event_store"] = event_store
+
+        # Pass the same store to every request's verification pipeline.
+        def configured_verifier(headers, body, source_ip):
+            return verify_webhook(
+                headers,
+                body,
+                source_ip,
+                event_store=event_store,
+            )
+
+        verifier = configured_verifier
+
     app.register_blueprint(create_webhook_blueprint(verifier))
     return app
 

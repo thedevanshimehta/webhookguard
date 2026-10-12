@@ -7,7 +7,8 @@ import os
 from receiver.pipeline.result import Decision, CheckResult, VALID, MALFORMED, UNKNOWN_KEY, INVALID_SIGNATURE, EXPIRED, REPLAYED, HTTP_STATUS
 from receiver.pipeline.timestamp_check import check_timestamp
 from receiver.pipeline.replay_check import check_replay
-from store.event_store import get_event_store
+from store.event_store import EventStore
+from store.event_store import create_event_store
 from app.config import load_config
 
 # Import logger from logs-dashboard correctly
@@ -18,17 +19,16 @@ sys.modules["logger"] = logger_module
 spec.loader.exec_module(logger_module)
 log_decision = logger_module.log_decision
 
-# Import signature check if available, else stub
-try:
-    from receiver.pipeline.signature_check import check_signature
-except ImportError:
-    # Stub for T10 (Vedansh Gholba's task not yet merged)
-    def check_signature(key_id, timestamp, event_id, body, signature_header):
-        return CheckResult(ok=True, reason=VALID)
+from receiver.pipeline.signature_check import check_signature
 
 EVENT_ID_REGEX = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
 
-def verify_webhook(headers: dict, body: bytes, source_ip: str) -> Decision:
+def verify_webhook(
+    headers: dict,
+    body: bytes,
+    source_ip: str,
+    event_store: EventStore | None = None,
+) -> Decision:
     """
     Orchestrates the webhook verification process.
     Section 3: Verification order
@@ -74,12 +74,32 @@ def verify_webhook(headers: dict, body: bytes, source_ip: str) -> Decision:
     if not ts_result.ok:
         return _reject(ts_result.reason, event_id, key_id, source_ip, timestamp_int, body)
 
-    # 5. Replay check
-    store = get_event_store(config)
-    ttl = 2 * config.timestamp_window + 10
-    replay_result = check_replay(event_id, store, ttl)
-    if not replay_result.ok:
-        return _reject(replay_result.reason, event_id, key_id, source_ip, timestamp_int, body)
+       # 5. Replay check
+    store = event_store
+    if store is None:
+        store = create_event_store(
+            kind=config.event_store,
+            path=config.event_store_path,
+            redis_url=config.redis_url,
+        )
+
+    replay_result = check_replay(
+        event_id,
+        store,
+        window_seconds=config.timestamp_window,
+        future_skew_seconds=config.timestamp_window,
+        key_id=key_id,
+    )
+
+    if not replay_result.passed:
+        return _reject(
+            replay_result.reason,
+            event_id,
+            key_id,
+            source_ip,
+            timestamp_int,
+            body,
+        )
 
     # 6. Accept
     decision = Decision(

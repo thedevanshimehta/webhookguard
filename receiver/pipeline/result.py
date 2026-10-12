@@ -8,6 +8,7 @@ UNKNOWN_KEY = "unknown_key"
 INVALID_SIGNATURE = "invalid_signature"
 EXPIRED = "expired"
 REPLAYED = "replayed"
+STORE_UNAVAILABLE = "store_unavailable"
 
 # Reason code -> HTTP status
 HTTP_STATUS = {
@@ -17,6 +18,7 @@ HTTP_STATUS = {
     INVALID_SIGNATURE: 401,
     EXPIRED: 400,
     REPLAYED: 409,
+    STORE_UNAVAILABLE: 503,
 }
 
 
