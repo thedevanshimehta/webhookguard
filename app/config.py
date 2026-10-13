@@ -3,8 +3,12 @@
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MAX_BODY_BYTES = 1024 * 1024  # 1 MiB; webhook payloads are small
 
 
 @dataclass(frozen=True)
@@ -14,6 +18,7 @@ class Config:
     event_store_path: str
     redis_url: str
     log_path: str
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
 
     # Backward compatibility with existing code.
     @property
@@ -21,9 +26,18 @@ class Config:
         return self.event_store_path
 
 
+def load_env() -> None:
+    """Load the project's .env into os.environ (existing variables win).
+
+    Every entry point (receiver, sender CLI, attack scripts) calls this, so a
+    key placed in .env works everywhere, not only in the receiver.
+    """
+    load_dotenv(PROJECT_ROOT / ".env")
+
+
 def load_config() -> Config:
     # Load variables from the project's .env file.
-    load_dotenv()
+    load_env()
 
     try:
         window = int(
@@ -63,6 +77,16 @@ def load_config() -> Config:
         "LOG_PATH", "logs/security.jsonl"
     )
 
+    try:
+        max_body_bytes = int(
+            os.getenv("MAX_BODY_BYTES", str(DEFAULT_MAX_BODY_BYTES))
+        )
+    except ValueError as exc:
+        raise ValueError("MAX_BODY_BYTES must be an integer") from exc
+
+    if max_body_bytes <= 0:
+        raise ValueError("MAX_BODY_BYTES must be positive")
+
     if not event_store_path.strip():
         raise ValueError("EVENT_STORE_PATH cannot be empty")
 
@@ -78,5 +102,6 @@ def load_config() -> Config:
         event_store_path=event_store_path,
         redis_url=redis_url,
         log_path=log_path,
+        max_body_bytes=max_body_bytes,
     )
 

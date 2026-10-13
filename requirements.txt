@@ -4,3 +4,4 @@ requests>=2.31
 pytest>=8.0
 redis>=5.0   # optional, only if EVENT_STORE=redis
 python-dotenv>=1.0
+fakeredis>=2.20   # optional, runs the Redis store tests without a Redis server

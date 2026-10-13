@@ -24,6 +24,9 @@ import secrets
 ENV_VAR = "WEBHOOKGUARD_KEYS"
 KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 MIN_SECRET_LENGTH = 8  # absolute minimum; real secrets should come from generate_secret() (64 hex chars)
+# Example values from .env.example and the docs. They are public on GitHub, so a
+# secret containing one of these was never replaced and must not be used.
+PLACEHOLDER_MARKERS = ("replace-with", "change-me", "changeme", "your-secret", "some-long-random")
 
 
 class KeyConfigError(ValueError):
@@ -54,6 +57,11 @@ def _load_keys() -> list[tuple[str, bytes]]:
             raise KeyConfigError(f"Entry {position}: key_id must be 1-32 chars of A-Z a-z 0-9 _ -.")
         if len(secret) < MIN_SECRET_LENGTH:
             raise KeyConfigError(f"Entry {position}: secret is shorter than {MIN_SECRET_LENGTH} characters.")
+        if any(marker in secret.lower() for marker in PLACEHOLDER_MARKERS):
+            raise KeyConfigError(
+                f"Entry {position}: secret is still the example placeholder. "
+                "Generate one with: python -m keys.key_manager"
+            )
         if key_id in seen:
             raise KeyConfigError(f"Duplicate key_id '{key_id}' in {ENV_VAR}.")
         seen.add(key_id)
