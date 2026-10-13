@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebhookGuard Dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5f6b7a; --border: #dfe3e8;
+    --valid: #1f8a4c; --forged: #c0392b; --replayed: #8e44ad; --expired: #c27c0e;
+    --malformed: #5f6b7a; --other: #2c6fbb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ee; --muted: #9aa5b4; --border: #2b3240;
+      --valid: #3ecf7a; --forged: #ff6b5b; --replayed: #c38ae0; --expired: #f0b44c;
+      --malformed: #9aa5b4; --other: #6aa8f0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  .muted { color: var(--muted); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 20px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+          border-top: 4px solid var(--accent, var(--border)); }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .value { font-size: 28px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--border); margin-top: 16px; }
+  .bar span { display: block; height: 100%; }
+  .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px;
+            max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+          color: #fff; background: var(--accent); }
+  #source { margin-top: 16px; padding: 12px 16px; background: var(--card); border: 1px dashed var(--border);
+            border-radius: 10px; display: none; }
+  .empty { padding: 20px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>WebhookGuard security dashboard</h1>
+    <span class="muted" id="status">Loading…</span>
+  </header>
+
+  <div id="source">
+    Live data is not available (open this page from the running receiver at
+    <code>/dashboard</code>), or load a log file directly:
+    <input type="file" id="file" accept=".jsonl,.json,.log,.txt">
+  </div>
+
+  <section class="cards" id="cards"></section>
+  <div class="bar" id="bar" aria-hidden="true"></div>
+
+  <h2>Recent decisions <span class="muted" id="recent-note"></span></h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Logged at (UTC)</th><th>Decision</th><th>Reason</th><th>Event ID</th>
+            <th>Key</th><th>Source IP</th><th>Request time</th></tr>
+      </thead>
+      <tbody id="rows"><tr><td colspan="7" class="empty">No decisions yet.</td></tr></tbody>
+    </table>
+  </div>
+  <p class="muted">Forgery and tampering both fail the HMAC and cannot be told apart, so they are
+     shown together. The log holds hashes and metadata only: no secrets, signatures or bodies.</p>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // Category -> reason codes from docs/api-contract.md section 4.
+  var CATEGORIES = [
+    { key: "valid",     label: "Valid",            color: "--valid",     reasons: ["valid"] },
+    { key: "forged",    label: "Forged / Tampered", color: "--forged",   reasons: ["invalid_signature", "unknown_key"] },
+    { key: "replayed",  label: "Replayed",         color: "--replayed",  reasons: ["replayed"] },
+    { key: "expired",   label: "Expired",          color: "--expired",   reasons: ["expired"] },
+    { key: "malformed", label: "Malformed",        color: "--malformed", reasons: ["malformed", "too_large"] },
+    { key: "other",     label: "Other errors",     color: "--other",     reasons: [] }
+  ];
+  var REFRESH_MS = 3000;
+  var RECENT = 200;
+
+  function categoryOf(reason) {
+    for (var i = 0; i < CATEGORIES.length - 1; i++) {
+      if (CATEGORIES[i].reasons.indexOf(reason) !== -1) return CATEGORIES[i];
+    }
+    return CATEGORIES[CATEGORIES.length - 1];
+  }
+
+  function el(tag, text, className) {
+    var node = document.createElement(tag);
+    // Log values can come from attacker-controlled headers: always text, never HTML.
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    if (className) node.className = className;
+    return node;
+  }
+
+  function render(data) {
+    var totals = {};
+    CATEGORIES.forEach(function (c) { totals[c.key] = 0; });
+    Object.keys(data.counts || {}).forEach(function (reason) {
+      totals[categoryOf(reason).key] += data.counts[reason];
+    });
+
+    var cards = document.getElementById("cards");
+    cards.replaceChildren();
+    var total = el("div", null, "card");
+    total.appendChild(el("div", "Total requests", "label"));
+    total.appendChild(el("div", data.total, "value"));
+    cards.appendChild(total);
+    CATEGORIES.forEach(function (c) {
+      var card = el("div", null, "card");
+      card.style.setProperty("--accent", "var(" + c.color + ")");
+      card.appendChild(el("div", c.label, "label"));
+      card.appendChild(el("div", totals[c.key], "value"));
+      cards.appendChild(card);
+    });
+
+    var bar = document.getElementById("bar");
+    bar.replaceChildren();
+    CATEGORIES.forEach(function (c) {
+      if (!data.total || !totals[c.key]) return;
+      var seg = el("span");
+      seg.style.width = (100 * totals[c.key] / data.total) + "%";
+      seg.style.background = "var(" + c.color + ")";
+      seg.title = c.label + ": " + totals[c.key];
+      bar.appendChild(seg);
+    });
+
+    var rows = document.getElementById("rows");
+    rows.replaceChildren();
+    if (!data.recent.length) {
+      var tr = el("tr");
+      var td = el("td", "No decisions yet.", "empty");
+      td.colSpan = 7;
+      tr.appendChild(td);
+      rows.appendChild(tr);
+    }
+    data.recent.forEach(function (e) {
+      var tr = el("tr");
+      var cat = categoryOf(e.reason);
+      tr.appendChild(el("td", e.logged_at));
+      tr.appendChild(el("td", e.decision));
+      var reasonCell = el("td");
+      var pill = el("span", e.reason, "pill");
+      pill.style.setProperty("--accent", "var(" + cat.color + ")");
+      reasonCell.appendChild(pill);
+      tr.appendChild(reasonCell);
+      tr.appendChild(el("td", e.event_id, "mono"));
+      tr.appendChild(el("td", e.key_id));
+      tr.appendChild(el("td", e.source_ip));
+      tr.appendChild(el("td", e.request_timestamp));
+      rows.appendChild(tr);
+    });
+    document.getElementById("recent-note").textContent =
+      data.total > data.recent.length ? "(latest " + data.recent.length + ")" : "";
+  }
+
+  function fromEntries(entries) {
+    var counts = {};
+    var accepted = 0;
+    entries.forEach(function (e) {
+      counts[e.reason] = (counts[e.reason] || 0) + 1;
+      if (e.decision === "accepted") accepted++;
+    });
+    return { total: entries.length, accepted: accepted, counts: counts,
+             recent: entries.slice(-RECENT).reverse() };
+  }
+
+  var status = document.getElementById("status");
+  var live = true;
+
+  function refresh() {
+    if (!live) return;
+    fetch("/dashboard/data", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (data) {
+        render(data);
+        status.textContent = "Live · updated " + new Date().toLocaleTimeString();
+      })
+      .catch(function () {
+        live = false;
+        status.textContent = "Offline";
+        document.getElementById("source").style.display = "block";
+      });
+  }
+
+  document.getElementById("file").addEventListener("change", function (ev) {
+    var file = ev.target.files[0];
+    if (!file) return;
+    file.text().then(function (text) {
+      var entries = [];
+      text.split(/\r?\n/).forEach(function (line) {
+        if (!line.trim()) return;
+        try { entries.push(JSON.parse(line)); } catch (e) { /* skip damaged line */ }
+      });
+      render(fromEntries(entries));
+      status.textContent = "From file: " + file.name;
+    });
+  });
+
+  if (location.protocol === "file:") {
+    live = false;
+    status.textContent = "Offline";
+    document.getElementById("source").style.display = "block";
+  } else {
+    refresh();
+    setInterval(refresh, REFRESH_MS);
+  }
+})();
+</script>
+</body>
+</html>
