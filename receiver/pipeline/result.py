@@ -9,6 +9,8 @@ INVALID_SIGNATURE = "invalid_signature"
 EXPIRED = "expired"
 REPLAYED = "replayed"
 STORE_UNAVAILABLE = "store_unavailable"
+TOO_LARGE = "too_large"
+PROCESSING_FAILED = "processing_failed"
 
 # Reason code -> HTTP status
 HTTP_STATUS = {
@@ -19,6 +21,8 @@ HTTP_STATUS = {
     EXPIRED: 400,
     REPLAYED: 409,
     STORE_UNAVAILABLE: 503,
+    TOO_LARGE: 413,
+    PROCESSING_FAILED: 500,
 }
 
 
