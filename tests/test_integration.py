@@ -1,8 +1,8 @@
 """Integration coverage for the crypto and replay portions of the receiver.
 
-The endpoint, sender, timestamp checker, and decision engine are not present in
-this repository snapshot yet. These tests therefore exercise the real modules
-that are available without replacing those future components with test doubles.
+These tests combine the real HMAC utilities and replay check without the HTTP
+layer. The full pipeline (sender, endpoint, decision engine, store and log) is
+covered end to end in tests/test_end_to_end.py.
 """
 
 import time
