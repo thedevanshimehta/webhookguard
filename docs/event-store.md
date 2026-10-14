@@ -1,6 +1,6 @@
 # Event Store and Replay Check (T13, Yashvi Dalal)
 
-## Interface (propose for api-contract.md section 4, "event_store")
+## Interface (api-contract.md sections 6 and 8)
 
 ```python
 class EventStore:
@@ -8,6 +8,8 @@ class EventStore:
         # True  = event_id is new (now recorded for ttl_seconds)
         # False = already seen and not expired -> replay
         # raises StoreUnavailable if the backend is down
+    def release(self, event_id: str) -> None
+        # forget event_id (application failed to process it; the retry must be accepted)
     def purge_expired(self) -> int
     def close(self) -> None
 
@@ -17,9 +19,12 @@ create_event_store(kind="sqlite" | "redis" | "memory", path=..., redis_url=...)
 ```python
 # receiver/pipeline/replay_check.py
 check_replay(event_id, store, *, window_seconds=300, future_skew_seconds=300, key_id=None)
-    -> ReplayResult(passed: bool, reason: str, http_status: int)
+    -> ReplayResult(passed: bool, reason: str, http_status: int)   # .ok == .passed
 # valid -> (True, "valid", 200) | replay -> (False, "replayed", 409)
 # store down -> (False, "store_unavailable", 503)   [fails closed]
+# empty event_id -> (False, "malformed", 400)
+
+release_replay(event_id, store, *, key_id=None) -> bool   # False if the store is down
 ```
 
 ## For the decision engine (T14, Harsh)
@@ -37,6 +42,9 @@ burn real event IDs. Only validly signed, fresh requests may reach it.
 - **Persistent** (SQLite file / Redis): a restart does not reopen the replay window.
 - **Fails closed**: store unreachable -> reject with 503, never accept unchecked.
 - **key_id namespacing** (optional): two senders reusing an event_id do not collide.
+- **Release on failure**: the replay check records an event before the application runs.
+  If the application then fails, the endpoint calls `release_replay` so the sender's
+  retry is accepted instead of being rejected as a replay (the event is not lost).
 
 ## Config the entrypoint (T04) needs
 
