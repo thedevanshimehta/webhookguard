@@ -15,8 +15,13 @@ import urllib.error
 import urllib.request
 import uuid
 
+from app.config import load_env
 from keys.key_manager import get_signing_key
 from receiver.crypto.hmac_utils import build_canonical, compute_signature
+
+# Load .env before reading any setting, so WEBHOOKGUARD_KEYS, WEBHOOKGUARD_URL
+# and TIMESTAMP_WINDOW_SECONDS placed there are used by every attack script.
+load_env()
 
 PROTECTED_URL = os.getenv("WEBHOOKGUARD_URL", "http://127.0.0.1:5000/webhook")
 TIMEOUT_SECONDS = float(os.getenv("WEBHOOKGUARD_TIMEOUT", "5"))
