@@ -40,13 +40,19 @@ TTL_MARGIN_SECONDS = 30
 REASON_VALID = "valid"
 REASON_REPLAYED = "replayed"
 REASON_STORE_ERROR = "store_unavailable"
+REASON_MALFORMED = "malformed"
 
 
 @dataclass(frozen=True)
 class ReplayResult:
     passed: bool
-    reason: str          # "valid" | "replayed" | "store_unavailable"
-    http_status: int     # 200 | 409 | 503
+    reason: str          # "valid" | "replayed" | "store_unavailable" | "malformed"
+    http_status: int     # 200 | 409 | 503 | 400
+
+    @property
+    def ok(self) -> bool:
+        """Same as ``passed``; matches CheckResult.ok used by the other checks."""
+        return self.passed
 
     def __bool__(self) -> bool:
         return self.passed
@@ -57,6 +63,27 @@ def ttl_for_window(window_seconds: float = DEFAULT_WINDOW_SECONDS,
                    margin_seconds: float = TTL_MARGIN_SECONDS) -> float:
     """How long an event_id must be remembered (see module docstring)."""
     return window_seconds + future_skew_seconds + margin_seconds
+
+
+def replay_key(event_id: str, key_id: str | None = None) -> str:
+    """Store key for an event: namespaced by key_id when one is given."""
+    return f"{key_id}:{event_id}" if key_id else event_id
+
+
+def release_replay(event_id: str, store: EventStore, *,
+                   key_id: str | None = None) -> bool:
+    """Forget an event recorded by check_replay so a retry can be accepted.
+
+    Used when the application fails to process an accepted event: without
+    this, the sender's legitimate retry would be rejected as a replay and the
+    event would be lost.  Returns False (and logs) if the store is down.
+    """
+    try:
+        store.release(replay_key(event_id, key_id))
+    except StoreUnavailable as e:
+        log.warning("event store unavailable, could not release event: %s", e)
+        return False
+    return True
 
 
 def check_replay(event_id: str, store: EventStore, *,
@@ -73,9 +100,9 @@ def check_replay(event_id: str, store: EventStore, *,
     """
     if not isinstance(event_id, str) or not event_id.strip():
         # Malformed input is rejected, never crashes the pipeline.
-        return ReplayResult(False, REASON_REPLAYED, 409)
+        return ReplayResult(False, REASON_MALFORMED, 400)
 
-    unique = f"{key_id}:{event_id}" if key_id else event_id
+    unique = replay_key(event_id, key_id)
     ttl = ttl_for_window(window_seconds, future_skew_seconds)
     try:
         is_new = store.check_and_set(unique, ttl)

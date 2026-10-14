@@ -47,6 +47,11 @@ class EventStore(ABC):
     def check_and_set(self, event_id: str, ttl_seconds: float) -> bool:
         """Atomically record event_id. Return True if new, False if duplicate."""
 
+    def release(self, event_id: str) -> None:
+        """Forget event_id so it can be accepted again.  Used when processing
+        of an accepted event fails and the sender will retry it."""
+        raise StoreUnavailable(f"{type(self).__name__} does not support release")
+
     def purge_expired(self) -> int:
         """Delete expired entries. Returns number removed (0 if backend self-expires)."""
         return 0
@@ -83,6 +88,10 @@ class InMemoryEventStore(EventStore):
                 return False
             self._seen[event_id] = now + ttl_seconds
             return True
+
+    def release(self, event_id: str) -> None:
+        with self._lock:
+            self._seen.pop(event_id, None)
 
     def purge_expired(self) -> int:
         now = self._clock()
@@ -175,6 +184,13 @@ class SQLiteEventStore(EventStore):
                 time.sleep(0.02 * (2 ** attempt))          # 20ms .. 640ms backoff
         raise StoreUnavailable(f"SQLite error: {last}") from last
 
+    def release(self, event_id: str) -> None:
+        try:
+            self._conn().execute(
+                "DELETE FROM seen_events WHERE event_id = ?", (event_id,))
+        except sqlite3.Error as e:
+            raise StoreUnavailable(f"SQLite error: {e}") from e
+
     def _maybe_purge(self) -> None:
         with self._calls_lock:
             self._calls += 1
@@ -227,6 +243,12 @@ class RedisEventStore(EventStore):
         except Exception as e:  # redis.RedisError and connection errors
             raise StoreUnavailable(f"Redis error: {e}") from e
         return bool(ok)
+
+    def release(self, event_id: str) -> None:
+        try:
+            self._r.delete(self._prefix + event_id)
+        except Exception as e:  # redis.RedisError and connection errors
+            raise StoreUnavailable(f"Redis error: {e}") from e
 
     def close(self) -> None:
         try:
