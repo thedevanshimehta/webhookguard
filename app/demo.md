@@ -5,7 +5,7 @@ against two receivers. Only the target changes.
 
 | | Vulnerable receiver | Protected receiver (WebhookGuard) |
 |---|---|---|
-| Code | `app/vulnerable_receiver.py` | `receiver/pipeline/endpoint.py` + `decision_engine.py` |
+| Code | `app/vulnerable_receiver.py` | `app/main.py` -> `receiver/pipeline/endpoint.py` + `decision_engine.py` |
 | Port | 5001 | 5000 |
 | Checks | none | key lookup, HMAC signature, timestamp window, replay |
 
@@ -19,8 +19,12 @@ pip install -r requirements.txt
 cp .env.example .env        # Windows: copy .env.example .env
 ```
 
-Make sure `.env` has a real key, for example `WEBHOOKGUARD_KEYS=k1:some-long-random-string`.
+Put a real key in `.env`. Generate a secret with `python -m keys.key_manager` and set
+`WEBHOOKGUARD_KEYS=k1:<that secret>`. The example placeholder is refused on purpose.
 For a clean demo you can also set `EVENT_STORE=memory` so no database file is created.
+
+The receiver, the sender CLI and the attack scripts all read `.env`, so nothing has to be
+exported in the shell.
 
 Open **three terminals** in the repo root.
 
@@ -28,10 +32,8 @@ Open **three terminals** in the repo root.
 ```
 python -m app.main
 ```
-If `app/main.py` is not available yet, this does the same job:
-```
-flask --app "receiver.pipeline.endpoint:create_webhook_app" run --port 5000
-```
+It prints the dashboard address: http://127.0.0.1:5000/dashboard. Open it in a browser and
+keep it visible; it refreshes every 3 seconds.
 
 **Terminal 2: vulnerable receiver (port 5001)**
 ```
@@ -150,6 +152,20 @@ Now every script prints `PASS`, for example `PASS: Forgery attack rejected with 
 Forgery and tampering both fail the HMAC, so the receiver cannot tell them apart and uses
 one code, `invalid_signature` (contract section 4). The dashboard shows it as "Forged / Tampered".
 
+### See the damage prevented
+
+The protected receiver forwards accepted events to a demo payments application with the same
+ledger view. Reset it first (`curl -X POST http://127.0.0.1:5000/reset`) for a clean count, run
+the four attacks, then open:
+
+```
+http://127.0.0.1:5000/ledger
+```
+
+Only the replay script's first, genuine delivery appears: `count: 1`, `total_amount: 500`.
+Compare it with the vulnerable receiver's `count: 5`, `total_amount: 7000`. The dashboard at
+http://127.0.0.1:5000/dashboard shows every attempt and why it was rejected.
+
 ## 4. Evidence in the security log
 
 The protected receiver writes one JSON line per decision to `LOG_PATH` (default
@@ -185,9 +201,10 @@ proven authentic, so an attacker cannot fill the store with fake IDs.
 
 ## 6. Reset and clean up
 
-Clear the vulnerable receiver's ledger between runs:
+Clear the ledgers between runs:
 ```
-curl -X POST http://127.0.0.1:5001/reset        # Windows PowerShell: curl.exe -X POST ...
+curl -X POST http://127.0.0.1:5001/reset        # vulnerable; Windows PowerShell: curl.exe -X POST ...
+curl -X POST http://127.0.0.1:5000/reset        # protected
 ```
 
 Stop both receivers with Ctrl+C. If you used SQLite, the event store file (`data/events.db`
@@ -199,6 +216,7 @@ by default) is local state; do not commit it.
 |---|---|
 | `Could not reach receiver at ...` | Start that receiver first, and check `WEBHOOKGUARD_URL` points at the right port. |
 | Attacks accepted when you expected rejection (or the reverse) | Check the `Target:` line the script prints. A leftover `WEBHOOKGUARD_URL` in your shell is the usual cause. |
-| Sender or attack script reports a key configuration error | Set `WEBHOOKGUARD_KEYS` in `.env`. |
-| Protected receiver returns `401 unknown_key` | The sender and receiver use different `WEBHOOKGUARD_KEYS`. Restart both after editing `.env`. |
+| Sender, attack script or receiver reports a key configuration error | Set `WEBHOOKGUARD_KEYS` in `.env` to a generated secret (`python -m keys.key_manager`). The example placeholder is refused. |
+| Genuine sender gets `401 invalid_signature` | Look at the last line of `logs/security.jsonl`. If it says `unknown_key`, the sender and receiver use different `WEBHOOKGUARD_KEYS` (the client is not told, on purpose). Restart both after editing `.env`. |
+| `413 too_large` | The body is bigger than `MAX_BODY_BYTES` (default 1 MiB). |
 | `ModuleNotFoundError` | Run commands from the repo root with `python -m ...`. |

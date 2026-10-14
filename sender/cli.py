@@ -9,6 +9,7 @@ from typing import Sequence
 
 import requests
 
+from app.config import load_env
 from keys.key_manager import KeyConfigError
 from sender.sender import SendResult, WebhookSendError, send_webhook
 
@@ -83,6 +84,7 @@ def _print_result(result: SendResult) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the webhook sender CLI."""
+    load_env()  # so WEBHOOKGUARD_KEYS in .env works, as the docs say
     args = parse_args(argv)
     payload = build_payment_event(
         args.event,

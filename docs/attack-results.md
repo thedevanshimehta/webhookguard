@@ -2,34 +2,38 @@
 
 ## 1. Purpose
 
-This document records the expected outcomes of the WebhookGuard attack demonstrations and the status of their verification. Expected outcomes are based on `docs/api-contract.md`. Results are not marked as observed unless confirmed by running the attack against a working receiver.
+This document records the outcomes of the WebhookGuard attack demonstrations. Expected outcomes are based on `docs/api-contract.md`. A result is marked as observed only when it was confirmed by running the attack against a working receiver.
 
 ## 2. Attack Results
 
-| Task | Attack | Expected HTTP Status | Expected Reason | Verification Status |
-|---|---|---:|---|---|
-| T15 | Forged signature | 401 | `invalid_signature` | Live receiver verification pending |
-| T15 | Tampered payload | 401 | `invalid_signature` | Live receiver verification pending |
-| T16 | Replayed webhook | 409 on second delivery | `replayed` | Live receiver verification pending |
-| T16 | Expired timestamp | 400 | `expired` | Live receiver verification pending |
+| Task | Attack | Expected HTTP Status | Expected Reason | Observed (protected receiver) | Observed (vulnerable receiver) |
+|---|---|---:|---|---|---|
+| T15 | Forged signature | 401 | `invalid_signature` | 401 `invalid_signature`, PASS | 200 accepted |
+| T15 | Tampered payload | 401 | `invalid_signature` | 401 `invalid_signature`, PASS | 200 accepted (paid INR 5000) |
+| T16 | Replayed webhook | 409 on second delivery | `replayed` | 200, then 409 `replayed`, PASS | 200, 200 (paid twice) |
+| T16 | Expired timestamp | 400 | `expired` | 400 `expired`, PASS | 200 accepted |
+
+Observed on 2026-10-13 with `python -m app.main` (port 5000) and `python -m app.vulnerable_receiver` (port 5001), following `app/demo.md`. After the four attacks:
+- the vulnerable receiver's `/ledger` showed 5 payouts totalling INR 7000;
+- the protected receiver's `/ledger` showed only the genuine payments.
 
 ## 3. Attack Descriptions
 
 ### T15: Forged Signature
 
-The forgery script signs a request using an incorrect secret while retaining the configured key ID. The receiver is expected to reject the request because its signature does not match.
+The forgery script signs a request using an incorrect secret while retaining the configured key ID. The receiver rejects the request because its signature does not match.
 
 Expected response: HTTP 401 with reason `invalid_signature`.
 
 ### T15: Tampered Payload
 
-The tampering script first signs a payment payload for INR 500, then changes the amount to INR 5000 without updating the signature. The receiver is expected to reject the modified payload.
+The tampering script first signs a payment payload for INR 500, then changes the amount to INR 5000 without updating the signature. The receiver rejects the modified payload.
 
 Expected response: HTTP 401 with reason `invalid_signature`.
 
 ### T16: Replayed Webhook
 
-The replay script sends the same signed request twice using the same event ID. The first delivery is expected to be accepted, and the duplicate delivery is expected to be rejected.
+The replay script sends the same signed request twice using the same event ID. The first delivery is accepted, and the duplicate delivery is rejected.
 
 Expected responses: HTTP 200 with reason `valid` on the first delivery, followed by HTTP 409 with reason `replayed`.
 
@@ -39,13 +43,9 @@ The expired-timestamp script creates a correctly signed request with a timestamp
 
 Expected response: HTTP 400 with reason `expired`.
 
-## 4. Test Status and Limitations
+## 4. Test Status
 
-The existing replay and timestamp unit tests previously ran with 42 passed and 4 skipped. Syntax checks for the T16 attack scripts also passed.
-
-These checks do not establish that the attack scripts succeed against a running HTTP receiver. Live end-to-end verification remains pending because required receiver modules were missing from the inspected `dev` checkout.
-
-Update the verification status and record actual HTTP responses after the receiver is available and the attack scripts have been run.
+The same four attacks also run automatically, in process, in `tests/test_end_to_end.py` (see `docs/integration.md`). The full suite (`python -m pytest tests/`) passes, including the Redis backend tests when `fakeredis` is installed.
 
 ## 5. API Contract Reference
 

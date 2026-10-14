@@ -51,17 +51,23 @@ webhookguard/
 ```
 
 ## Quick start
-> Commands become final once the entrypoint (T04) is merged.
 
 ```bash
 git clone <repo-url> && cd webhookguard
 python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env                                  # then set a real secret
-python -m app.main                                    # start the protected receiver
+cp .env.example .env                                  # Windows: copy .env.example .env
+python -m keys.key_manager                            # prints a secret: put it in .env as WEBHOOKGUARD_KEYS=k1:<secret>
+python -m app.main                                    # start the protected receiver on :5000
 python -m sender.cli --event payment.success --amount 500   # send a signed event
 pytest tests/ -v
 ```
+
+The receiver refuses to start while `.env` still holds the example secret. Once it is running:
+- dashboard: http://127.0.0.1:5000/dashboard
+- payments processed by the demo application: http://127.0.0.1:5000/ledger
+
+For the vulnerable-vs-protected attack demo, see `app/demo.md`.
 
 ## Team and ownership
 | ID | Member | Module | Main files |
